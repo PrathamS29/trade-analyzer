@@ -11,22 +11,28 @@ client: AsyncIOMotorClient = None
 database = None
 
 async def init_database():
-    """Initialize Beanie with MongoDB"""
+    """Initialize Beanie with MongoDB. Gracefully skips if MongoDB is unavailable."""
     global client, database
-    
+
     mongodb_url = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
     database_name = os.getenv("DATABASE_NAME", "trade_analyzer")
-    
-    # Create motor client
-    client = AsyncIOMotorClient(mongodb_url)
-    database = client[database_name]
-    
-    # Initialize Beanie
-    await init_beanie(
-        database=database,
-        document_models=[User, Player]
-    )
-    
+
+    try:
+        # Create motor client with short timeout
+        client = AsyncIOMotorClient(mongodb_url, serverSelectionTimeoutMS=3000)
+        database = client[database_name]
+
+        # Initialize Beanie
+        await init_beanie(
+            database=database,
+            document_models=[User, Player]
+        )
+        print("MongoDB connected successfully")
+    except Exception as e:
+        print(f"MongoDB not available ({e}). Predictions API will still work.")
+        client = None
+        database = None
+
     return database
 
 async def close_database():

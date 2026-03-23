@@ -1,13 +1,16 @@
 """
-Training Script for Fantasy Basketball CNN
-Place this file in your project root directory
+Training script for Fantasy Basketball CNN.
+Uses real NBA game log data and trains with proper targets and splits.
 """
 
-import pandas as pd
-import numpy as np
-from fantasy_cnn import FantasyBasketballCNN, FantasyFeatureEngine
-from sklearn.model_selection import train_test_split
 import os
+import numpy as np
+import pandas as pd
+from fantasy_cnn import (
+    FantasyBasketballCNN,
+    prepare_training_data,
+    split_by_player,
+)
 
 
 def main():
@@ -16,192 +19,86 @@ def main():
     print("=" * 60)
 
     # ====================================
-    # 1. LOAD YOUR DATA
+    # 1. LOAD DATA
     # ====================================
-    print("\n[1/6] Loading data...")
-
-    # Check if data file exists
     data_path = 'data/player_games_2024.csv'
     if not os.path.exists(data_path):
-        print(f"❌ ERROR: Cannot find {data_path}")
-        print("Please place your CSV file in the data/ folder")
+        print(f"ERROR: {data_path} not found. Run fetch_data.py first.")
         return
 
     df = pd.read_csv(data_path)
-    print(f"✅ Loaded {len(df)} game records")
-    print(f"✅ Found {df['player_id'].nunique()} unique players")
-
-    # Show sample of data
-    print("\nFirst few rows of data:")
-    print(df.head(3))
+    print(f"Loaded {len(df)} game records for {df['player_id'].nunique()} players")
 
     # ====================================
-    # 2. DATA VALIDATION
+    # 2. PREPARE SEQUENCES & TARGETS
     # ====================================
-    print("\n[2/6] Validating data...")
+    SEQUENCE_LENGTH = 10
+    LOOKAHEAD = 5
 
-    required_columns = [
-        'player_id', 'player_name', 'game_date', 'age', 'fantasy_points',
-        'season_avg_fp', 'last_5_avg_fp'
-    ]
-
-    missing_cols = [col for col in required_columns if col not in df.columns]
-    if missing_cols:
-        print(f"❌ ERROR: Missing required columns: {missing_cols}")
-        return
-
-    print("✅ All required columns present")
-
-    # Fill missing values with defaults
-    defaults = {
-        'usage_rate': 0.20,
-        'true_shooting_pct': 0.55,
-        'per': 15.0,
-        'mpg': 25.0,
-        'fp_std_dev_15': 5.0,
-        'games_missed_last_season': 0,
-        'injury_status': 'healthy',
-        'team_pace': 100.0,
-        'is_starter': 1,
-        'games_remaining': 82
-    }
-    df = df.fillna(defaults)
-    print("✅ Filled missing values with defaults")
+    print(f"\nBuilding sequences (window={SEQUENCE_LENGTH}, lookahead={LOOKAHEAD})...")
+    X, y, player_ids = prepare_training_data(df, SEQUENCE_LENGTH, LOOKAHEAD)
+    print(f"Created {len(X)} samples, input shape: {X.shape}")
+    print(f"  expected_fp range: [{y['expected_fp'].min():.0f}, {y['expected_fp'].max():.0f}]")
+    print(f"  high_end range:    [{y['high_end'].min():.0f}, {y['high_end'].max():.0f}]")
+    print(f"  low_end range:     [{y['low_end'].min():.0f}, {y['low_end'].max():.0f}]")
 
     # ====================================
-    # 3. PREPARE DATA FOR MODEL
+    # 3. SPLIT BY PLAYER (no leakage)
     # ====================================
-    print("\n[3/6] Preparing sequences for training...")
-
-    feature_engine = FantasyFeatureEngine()
-
-    X_data = []
-    y_high = []
-    y_low = []
-    y_expected = []
-    y_confidence = []
-
-    players_processed = 0
-    sequences_created = 0
-
-    for player_id in df['player_id'].unique():
-        player_df = df[df['player_id'] == player_id].sort_values('game_date')
-
-        # Need at least 16 games (15 for sequence + 1 for target)
-        if len(player_df) < 16:
-            continue
-
-        players_processed += 1
-
-        # Create sliding windows
-        for i in range(len(player_df) - 15):
-            sequence = player_df.iloc[i:i + 15]
-
-            # Extract features for each game in sequence
-            feature_vectors = []
-            for _, game in sequence.iterrows():
-                game_dict = game.to_dict()
-                features = feature_engine.engineer_all_features(game_dict)
-                feature_vectors.append(list(features.values()))
-
-            X_data.append(feature_vectors)
-
-            # Target: predict next game
-            next_game = player_df.iloc[i + 15]
-            next_game_dict = next_game.to_dict()
-            features = feature_engine.engineer_all_features(next_game_dict)
-            high, low, expected = feature_engine.calculate_high_low_projections(features)
-
-            y_high.append(high)
-            y_low.append(low)
-            y_expected.append(expected)
-            y_confidence.append(1.0)
-
-            sequences_created += 1
-
-        # Progress update every 50 players
-        if players_processed % 50 == 0:
-            print(f"  Processed {players_processed} players, created {sequences_created} sequences...")
-
-    # Convert to numpy arrays
-    X = np.array(X_data)
-    y = {
-        'high_end': np.array(y_high),
-        'low_end': np.array(y_low),
-        'expected_avg': np.array(y_expected),
-        'confidence': np.array(y_confidence)
-    }
-
-    print(f"✅ Processed {players_processed} players")
-    print(f"✅ Created {sequences_created} training samples")
-    print(f"✅ Input shape: {X.shape}")
-
-    if len(X) < 100:
-        print("⚠️  WARNING: Very few training samples. Model may not train well.")
-        print("   Recommendation: Get more data (multiple seasons)")
+    print("\nSplitting by player (80/20)...")
+    X_train, y_train, X_val, y_val = split_by_player(X, y, player_ids, val_fraction=0.2)
+    print(f"  Train: {len(X_train)} samples")
+    print(f"  Val:   {len(X_val)} samples")
 
     # ====================================
-    # 4. SPLIT DATA
+    # 4. BUILD & TRAIN
     # ====================================
-    print("\n[4/6] Splitting into train/validation sets...")
-
-    # Simple split by index (keeps time series order mostly intact)
-    split_idx = int(len(X) * 0.8)
-    X_train = X[:split_idx]
-    X_val = X[split_idx:]
-
-    y_train = {k: v[:split_idx] for k, v in y.items()}
-    y_val = {k: v[split_idx:] for k, v in y.items()}
-
-    print(f"✅ Training samples: {len(X_train)}")
-    print(f"✅ Validation samples: {len(X_val)}")
-
-    # ====================================
-    # 5. BUILD AND TRAIN MODEL
-    # ====================================
-    print("\n[5/6] Building model architecture...")
-
     n_features = X.shape[2]
-    model = FantasyBasketballCNN(n_features=n_features, sequence_length=15)
+    model = FantasyBasketballCNN(n_features=n_features, sequence_length=SEQUENCE_LENGTH)
     model.build_model()
-
-    print(f"✅ Model built with {n_features} features")
-    print("\nModel architecture:")
+    print(f"\nModel built with {n_features} features")
     model.model.summary()
 
-    print("\n[6/6] Training model...")
-    print("This may take 10-30 minutes depending on data size...")
-    print("Press Ctrl+C to stop early (model will save best weights)\n")
-
-    history = model.train(
-        X_train, y_train,
-        X_val, y_val,
-        epochs=50,
-        batch_size=32
-    )
+    print("\nTraining...")
+    history = model.train(X_train, y_train, X_val, y_val, epochs=50, batch_size=32)
 
     # ====================================
-    # 6. SAVE MODEL
-    # ====================================
-    print("\nSaving model...")
-
-    os.makedirs('models', exist_ok=True)
-    model.model.save('models/saved_model')
-
-    print("✅ Model saved to models/saved_model/")
-
-    # ====================================
-    # 7. TRAINING SUMMARY
+    # 5. EVALUATE
     # ====================================
     print("\n" + "=" * 60)
-    print("TRAINING COMPLETE!")
+    print("VALIDATION METRICS")
     print("=" * 60)
-    print(f"Total samples trained: {len(X_train)}")
-    print(f"Validation samples: {len(X_val)}")
-    print(f"Model location: models/saved_model/")
-    print("\nNext steps:")
-    print("1. Run predict_player.py to make predictions")
-    print("2. Run analyze_trade.py to analyze trades")
+
+    preds = model.predict(X_val)
+    pred_expected = preds[0].flatten()
+    pred_high = preds[1].flatten()
+    pred_low = preds[2].flatten()
+
+    for name, pred, actual in [
+        ('expected_fp', pred_expected, y_val['expected_fp']),
+        ('high_end', pred_high, y_val['high_end']),
+        ('low_end', pred_low, y_val['low_end']),
+    ]:
+        mae = np.mean(np.abs(pred - actual))
+        rmse = np.sqrt(np.mean((pred - actual) ** 2))
+        ss_res = np.sum((actual - pred) ** 2)
+        ss_tot = np.sum((actual - np.mean(actual)) ** 2)
+        r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+        print(f"  {name:12s}  MAE={mae:6.2f}  RMSE={rmse:6.2f}  R2={r2:6.3f}")
+
+    # Baseline: always predict season_avg_fp
+    # (grab the last game in each val sequence for its season_avg_fp)
+    baseline_pred = X_val[:, -1, 2]  # column index 2 = season_avg_fp
+    baseline_mae = np.mean(np.abs(baseline_pred - y_val['expected_fp']))
+    print(f"\n  Baseline (season avg) MAE={baseline_mae:.2f}")
+    print(f"  Model beats baseline by {baseline_mae - np.mean(np.abs(pred_expected - y_val['expected_fp'])):.2f} FP")
+
+    # ====================================
+    # 6. SAVE
+    # ====================================
+    os.makedirs('models', exist_ok=True)
+    model.model.save('models/fantasy_cnn.keras')
+    print(f"\nModel saved to models/fantasy_cnn.keras")
     print("=" * 60)
 
 

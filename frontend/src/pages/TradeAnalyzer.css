@@ -213,6 +213,188 @@
   background: #f8f9fa;
 }
 
+/* Prediction display in player cards */
+.player-predictions {
+  margin-top: 0.5rem;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.25rem;
+}
+
+.pred-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+}
+
+.pred-label {
+  color: #666;
+}
+
+.pred-value {
+  font-weight: 600;
+  color: #333;
+}
+
+.pred-value.ceiling {
+  color: #28a745;
+}
+
+.pred-value.floor {
+  color: #dc3545;
+}
+
+/* Player card in trade side */
+.player-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 0.75rem;
+  margin-bottom: 0.5rem;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border: 1px solid #e9ecef;
+}
+
+.player-name {
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 0.25rem;
+}
+
+.player-details {
+  display: flex;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: #666;
+  margin-bottom: 0.25rem;
+}
+
+.player-position {
+  background: #667eea;
+  color: white;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  font-size: 0.75rem;
+}
+
+.player-team {
+  color: #888;
+}
+
+.remove-button {
+  background: none;
+  border: none;
+  color: #dc3545;
+  font-size: 1.5rem;
+  cursor: pointer;
+  padding: 0 0.5rem;
+  line-height: 1;
+}
+
+.remove-button:hover {
+  color: #a71d2a;
+}
+
+/* Analysis panel styling */
+.analyzing {
+  color: white;
+  font-style: italic;
+  font-size: 0.9rem;
+}
+
+.analysis-details div {
+  margin: 0.25rem 0;
+}
+
+/* Search form */
+.search-form {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.search-input {
+  flex: 2;
+  padding: 0.75rem;
+  border: 2px solid #e0e0e0;
+  border-radius: 6px;
+  font-size: 1rem;
+  min-width: 200px;
+}
+
+.search-input:focus {
+  border-color: #667eea;
+  outline: none;
+}
+
+.filter-group {
+  display: flex;
+  gap: 0.5rem;
+  flex: 1;
+}
+
+.filter-select {
+  flex: 1;
+  padding: 0.75rem;
+  border: 2px solid #e0e0e0;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  background: white;
+}
+
+/* Search results */
+.search-results {
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.results-header {
+  padding: 0.5rem 1rem;
+  background: #f8f9fa;
+  border-bottom: 1px solid #e0e0e0;
+  font-size: 0.9rem;
+  color: #666;
+}
+
+.search-result-item {
+  padding: 0.75rem 1rem;
+  cursor: pointer;
+  border-bottom: 1px solid #f0f0f0;
+  transition: background 0.2s;
+}
+
+.search-result-item:hover {
+  background: #f0f4ff;
+}
+
+.result-player-name {
+  font-weight: 600;
+  color: #333;
+}
+
+.result-player-details {
+  display: flex;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+  color: #666;
+  margin-top: 0.25rem;
+}
+
+.result-points {
+  font-weight: 500;
+  color: #28a745;
+}
+
+.loading-indicator, .no-results {
+  text-align: center;
+  padding: 1rem;
+  color: #666;
+}
+
 @media (max-width: 768px) {
   .trade-sides {
     grid-template-columns: 1fr;

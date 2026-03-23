@@ -23,15 +23,8 @@ function App() {
                 </ProtectedRoute>
               }
             />
-            <Route
-              path="/trade-analyzer"
-              element={
-                <ProtectedRoute>
-                  <TradeAnalyzer />
-                </ProtectedRoute>
-              }
-            />
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
+            <Route path="/trade-analyzer" element={<TradeAnalyzer />} />
+            <Route path="/" element={<Navigate to="/trade-analyzer" replace />} />
           </Routes>
         </div>
       </Router>

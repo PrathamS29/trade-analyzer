@@ -1,6 +1,7 @@
 """
 Fantasy Basketball CNN Trade Analyzer
-Complete implementation with feature engineering and model architecture
+Complete implementation with feature engineering and model architecture.
+Designed to work with real NBA game log data from nba_api.
 """
 
 import numpy as np
@@ -8,10 +9,7 @@ import pandas as pd
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers, models
-from sklearn.preprocessing import StandardScaler, MinMaxScaler
-from sklearn.model_selection import train_test_split
-import json
-from datetime import datetime, timedelta
+from sklearn.preprocessing import StandardScaler
 from typing import Dict, List, Tuple, Optional
 
 
@@ -19,28 +17,32 @@ from typing import Dict, List, Tuple, Optional
 # PART 1: FEATURE ENGINEERING PIPELINE
 # ============================================================================
 
+# Feature names produced by engineer_all_features (order matters for model input)
+FEATURE_NAMES: List[str] = []  # populated on first call
+
+
 class FantasyFeatureEngine:
     """
-    Comprehensive feature engineering for fantasy basketball predictions
+    Feature engineering grounded in columns available from fetch_data.py.
+    Every feature is derived from real box-score data.
     """
 
     def __init__(self):
         self.scaler = StandardScaler()
-        self.minmax_scaler = MinMaxScaler()
+
+    # ------------------------------------------------------------------
+    # Derived risk / context scores (use only available columns)
+    # ------------------------------------------------------------------
 
     def calculate_injury_risk_score(self, player_data: Dict) -> float:
-        """
-        Calculate injury risk score (0-1 scale)
-        """
+        """Injury risk score (0-1 scale) based on age and games missed."""
+        age = player_data.get('age', 25)
         games_missed_last = player_data.get('games_missed_last_season', 0)
         games_missed_current = player_data.get('games_missed_current', 0)
-        games_played_current = player_data.get('games_played', 1)
-        age = player_data.get('age', 25)
-        current_status = player_data.get('injury_status', 'healthy')  # healthy, questionable, out
+        games_played = player_data.get('games_played', 1)
 
-        # Age factor
         if age < 27:
-            age_factor = 0
+            age_factor = 0.0
         elif age <= 30:
             age_factor = 0.1
         elif age <= 33:
@@ -48,281 +50,104 @@ class FantasyFeatureEngine:
         else:
             age_factor = 0.5
 
-        # Current status factor
-        status_map = {'healthy': 0, 'day-to-day': 0.3, 'questionable': 0.5, 'out': 1.0}
-        status_factor = status_map.get(current_status.lower(), 0)
-
-        # Calculate injury risk
         injury_risk = (
-                (games_missed_last / 82) * 0.3 +
-                (games_missed_current / max(games_played_current, 1)) * 0.4 +
-                age_factor * 0.2 +
-                status_factor * 0.1
+            (games_missed_last / 82) * 0.3
+            + (games_missed_current / max(games_played, 1)) * 0.4
+            + age_factor * 0.3
         )
-
         return min(injury_risk, 1.0)
 
-    def calculate_schedule_difficulty(self, player_data: Dict) -> float:
-        """
-        Calculate schedule difficulty score (0-1 scale)
-        Lower = easier schedule, Higher = harder schedule
-        """
-        opponent_def_ratings = player_data.get('next_5_opponent_def_ratings', [0.5] * 5)
-        opponent_pace = player_data.get('next_5_opponent_pace', [100] * 5)
-        back_to_backs = player_data.get('back_to_backs_remaining', 0)
-        total_games = player_data.get('games_remaining', 82)
-
-        # Normalize opponent defensive ratings (assuming 105-115 range)
-        avg_def_rating = np.mean(opponent_def_ratings)
-        def_rating_normalized = (avg_def_rating - 105) / 10  # 0-1 scale
-
-        # Normalize pace (assuming 95-105 range)
-        avg_pace = np.mean(opponent_pace)
-        pace_normalized = 1 - ((avg_pace - 95) / 10)  # Inverted: higher pace = easier
-
-        # Back-to-back factor
-        b2b_factor = (back_to_backs / max(total_games, 1)) if total_games > 0 else 0
-
-        schedule_difficulty = (
-                def_rating_normalized * 0.6 +
-                pace_normalized * 0.2 +
-                b2b_factor * 0.2
-        )
-
-        return np.clip(schedule_difficulty, 0, 1)
-
-    def calculate_teammate_impact_score(self, player_data: Dict) -> float:
-        """
-        The "Jokic Effect" - how much does having a star teammate help?
-        """
-        star_teammate_assist_rate = player_data.get('star_teammate_assist_rate', 0)
-        star_teammate_usage = player_data.get('star_teammate_usage_rate', 0)
-        star_on_off_split = player_data.get('fp_with_star_vs_without', 0)  # FP difference
-        double_team_gravity = player_data.get('star_teammate_double_team_rate', 0)
-
-        # Positive impact: better looks from star playmaker
-        positive_impact = (
-                star_teammate_assist_rate * 0.3 +
-                double_team_gravity * 0.3 +
-                (star_on_off_split / 50) * 0.4  # Normalize by typical FP
-        )
-
-        # Negative impact: reduced usage
-        negative_impact = star_teammate_usage * 0.5
-
-        # Net impact (-1 to 1 scale)
-        net_impact = positive_impact - negative_impact
-
-        return np.clip(net_impact, -1, 1)
-
-    def calculate_contract_motivation_score(self, player_data: Dict) -> float:
-        """
-        Contract year and motivation factors
-        """
-        is_contract_year = player_data.get('contract_year', False)
-        years_until_fa = player_data.get('years_until_free_agency', 3)
-        is_prove_it_deal = player_data.get('prove_it_deal', False)
-        contract_value_remaining = player_data.get('contract_value_remaining_millions', 50)
-
-        motivation_score = 0
-
-        # Contract year boost
-        if is_contract_year:
-            motivation_score += 0.4
-
-        # Urgency factor
-        motivation_score += (1 / max(years_until_fa, 1)) * 0.3
-
-        # Prove-it deal boost
-        if is_prove_it_deal:
-            motivation_score += 0.2
-
-        # Low contract value = needs to prove worth
-        if contract_value_remaining < 20:
-            motivation_score += 0.1
-
-        return min(motivation_score, 1.0)
-
-    def calculate_usage_explosion_probability(self, player_data: Dict) -> float:
-        """
-        Probability of usage rate explosion (star leaves, injury, etc.)
-        """
-        star_teammate_left = player_data.get('star_teammate_recently_left', False)
-        days_since_roster_change = player_data.get('days_since_roster_change', 999)
-        shot_attempts_trend = player_data.get('shot_attempts_last_5_vs_season', 1.0)  # ratio
-        usage_rate_trend = player_data.get('usage_rate_last_5_vs_season', 1.0)
-        new_starting_role = player_data.get('new_starting_role', False)
-
-        explosion_prob = 0
-
-        # Star left = usage spike
-        if star_teammate_left and days_since_roster_change < 30:
-            explosion_prob += 0.4
-
-        # Shot attempts increasing
-        if shot_attempts_trend > 1.1:
-            explosion_prob += 0.2
-
-        # Usage rate increasing
-        if usage_rate_trend > 1.1:
-            explosion_prob += 0.2
-
-        # New starting role
-        if new_starting_role:
-            explosion_prob += 0.2
-
-        return min(explosion_prob, 1.0)
-
-    def calculate_matchup_advantage_score(self, player_data: Dict) -> float:
-        """
-        Historical performance vs upcoming opponents
-        """
-        historical_fp_vs_opponents = player_data.get('historical_fp_vs_next_5_opponents', [])
-        season_avg_fp = player_data.get('season_avg_fp', 30)
-
-        if not historical_fp_vs_opponents:
+    def calculate_trend_score(self, player_data: Dict) -> float:
+        """How much the player is trending up or down vs season average.
+        Positive = hot streak, negative = cold streak. Normalised by avg."""
+        season_avg = player_data.get('season_avg_fp', 1)
+        last_5 = player_data.get('last_5_avg_fp', season_avg)
+        if season_avg == 0:
             return 0.0
+        return (last_5 - season_avg) / max(season_avg, 1)
 
-        # Calculate advantage: (avg vs opponents - season avg) / season avg
-        avg_vs_opponents = np.mean(historical_fp_vs_opponents)
-        advantage = (avg_vs_opponents - season_avg_fp) / max(season_avg_fp, 1)
+    def calculate_consistency_score(self, player_data: Dict) -> float:
+        """Lower std-dev relative to mean = more consistent (0-1, 1 = very consistent)."""
+        std = player_data.get('fp_std_15', 5)
+        avg = player_data.get('season_avg_fp', 1)
+        cv = std / max(avg, 1)
+        return max(1.0 - cv, 0.0)
 
-        # Normalize to -1 to 1 scale
-        return np.clip(advantage, -1, 1)
-
-    def calculate_breakout_probability(self, player_data: Dict) -> float:
-        """
-        Young player breakout detection
-        """
-        age = player_data.get('age', 30)
-        minutes_trend = player_data.get('minutes_last_10_vs_previous_10', 1.0)  # ratio
-        usage_trend = player_data.get('usage_rate_last_10_vs_previous_10', 1.0)
-        fp_trend = player_data.get('fp_last_10_vs_previous_10', 1.0)
-        is_tanking_team = player_data.get('team_is_tanking', False)
-
-        breakout_prob = 0
-
-        # Young player bonus
-        if age < 25:
-            breakout_prob += 0.3
-
-        # Increasing minutes
-        if minutes_trend > 1.15:
-            breakout_prob += 0.25
-
-        # Increasing usage
-        if usage_trend > 1.1:
-            breakout_prob += 0.2
-
-        # Performance trending up
-        if fp_trend > 1.1:
-            breakout_prob += 0.15
-
-        # Tanking team gives opportunities
-        if is_tanking_team:
-            breakout_prob += 0.1
-
-        return min(breakout_prob, 1.0)
+    # ------------------------------------------------------------------
+    # Main feature extraction
+    # ------------------------------------------------------------------
 
     def engineer_all_features(self, player_data: Dict) -> Dict:
         """
-        Main method: Engineer ALL features for a player
+        Extract all features from a single game row.
+        Returns an ordered dict whose values become model input.
         """
-        features = {}
+        f = {}
 
-        # Basic stats (from raw data)
-        features['age'] = player_data.get('age', 25)
-        features['games_played'] = player_data.get('games_played', 0)
-        features['games_remaining'] = player_data.get('games_remaining', 82)
-        features['season_avg_fp'] = player_data.get('season_avg_fp', 0)
-        features['minutes_per_game'] = player_data.get('mpg', 0)
-        features['usage_rate'] = player_data.get('usage_rate', 0)
-        features['true_shooting_pct'] = player_data.get('ts_pct', 0.5)
-        features['assist_to_turnover'] = player_data.get('ast_to_ratio', 1.0)
-        features['per'] = player_data.get('per', 15)
+        # --- Basic stats ---
+        f['age'] = player_data.get('age', 25)
+        f['games_played'] = player_data.get('games_played', 0)
+        f['season_avg_fp'] = player_data.get('season_avg_fp', 0)
+        f['minutes'] = player_data.get('minutes', player_data.get('mpg', 0))
+        f['mpg'] = player_data.get('mpg', 0)
+        f['usage_rate'] = player_data.get('usage_rate', 0.2)
+        f['true_shooting_pct'] = player_data.get('true_shooting_pct', 0.5)
+        f['is_starter'] = float(player_data.get('is_starter', 0))
 
-        # Performance trends
-        features['last_5_avg_fp'] = player_data.get('last_5_avg_fp', 0)
-        features['last_10_avg_fp'] = player_data.get('last_10_avg_fp', 0)
-        features['last_15_avg_fp'] = player_data.get('last_15_avg_fp', 0)
-        features['fp_std_dev_15'] = player_data.get('fp_std_15', 5)
-        features['fp_std_dev_30'] = player_data.get('fp_std_30', 5)
+        # --- Box score (this game) ---
+        f['pts'] = player_data.get('pts', 0)
+        f['reb'] = player_data.get('reb', 0)
+        f['ast'] = player_data.get('ast', 0)
+        f['stl'] = player_data.get('stl', 0)
+        f['blk'] = player_data.get('blk', 0)
+        f['tov'] = player_data.get('tov', 0)
+        f['fgm'] = player_data.get('fgm', 0)
+        f['fga'] = player_data.get('fga', 0)
+        f['fg3m'] = player_data.get('fg3m', 0)
+        f['fg3a'] = player_data.get('fg3a', 0)
+        f['ftm'] = player_data.get('ftm', 0)
+        f['fta'] = player_data.get('fta', 0)
 
-        # Calculated advanced features
-        features['injury_risk_score'] = self.calculate_injury_risk_score(player_data)
-        features['schedule_difficulty'] = self.calculate_schedule_difficulty(player_data)
-        features['teammate_impact_score'] = self.calculate_teammate_impact_score(player_data)
-        features['contract_motivation_score'] = self.calculate_contract_motivation_score(player_data)
-        features['usage_explosion_prob'] = self.calculate_usage_explosion_probability(player_data)
-        features['matchup_advantage_score'] = self.calculate_matchup_advantage_score(player_data)
-        features['breakout_probability'] = self.calculate_breakout_probability(player_data)
+        # --- Rolling averages / trends ---
+        f['last_5_avg_fp'] = player_data.get('last_5_avg_fp', 0)
+        f['last_10_avg_fp'] = player_data.get('last_10_avg_fp', 0)
+        f['last_15_avg_fp'] = player_data.get('last_15_avg_fp', 0)
+        f['fp_std_15'] = player_data.get('fp_std_15', 5)
+        f['fp_std_30'] = player_data.get('fp_std_30', 5)
 
-        # Team context
-        features['team_pace'] = player_data.get('team_pace', 100)
-        features['team_win_pct'] = player_data.get('team_win_pct', 0.5)
-        features['is_starter'] = float(player_data.get('is_starter', True))
+        # --- Derived scores ---
+        f['injury_risk'] = self.calculate_injury_risk_score(player_data)
+        f['trend_score'] = self.calculate_trend_score(player_data)
+        f['consistency'] = self.calculate_consistency_score(player_data)
 
-        # Position (one-hot encoded)
-        position = player_data.get('position', 'SG')
-        for pos in ['PG', 'SG', 'SF', 'PF', 'C']:
-            features[f'pos_{pos}'] = float(pos in position)
+        # --- Position one-hot ---
+        position = str(player_data.get('position', ''))
+        for pos in ['Guard', 'Forward', 'Center']:
+            f[f'pos_{pos}'] = float(pos in position)
 
-        # Volatility metrics
-        features['coefficient_variation'] = features['fp_std_dev_15'] / max(features['season_avg_fp'], 1)
-        features['floor_game_pct'] = player_data.get('pct_games_below_20fp', 0)
-        features['ceiling_game_pct'] = player_data.get('pct_games_above_50fp', 0)
+        # Cache feature names on first call
+        global FEATURE_NAMES
+        if not FEATURE_NAMES:
+            FEATURE_NAMES = list(f.keys())
 
-        return features
+        return f
+
+    # ------------------------------------------------------------------
+    # Simple heuristic projections (used by TradeAnalyzer when no model)
+    # ------------------------------------------------------------------
 
     def calculate_high_low_projections(self, features: Dict) -> Tuple[float, float, float]:
-        """
-        Calculate High End, Low End, and Expected Average using our formula
-        """
-        base_avg = features['season_avg_fp']
-        std_dev = features['fp_std_dev_15']
-        injury_risk = features['injury_risk_score']
-        schedule_diff = features['schedule_difficulty']
+        """Heuristic ceiling / floor / expected projection."""
+        base = features.get('season_avg_fp', 0)
+        std = features.get('fp_std_15', 5)
+        trend = features.get('trend_score', 0)
 
-        # Trend bonus/penalty
-        recent_avg = features['last_5_avg_fp']
-        trend_diff = recent_avg - base_avg
+        expected = base * 0.7 + features.get('last_5_avg_fp', base) * 0.3
+        high = expected + std * 1.0 + base * max(trend, 0) * 0.1
+        low = expected - std * 1.0 + base * min(trend, 0) * 0.1
+        low -= base * features.get('injury_risk', 0) * 0.1
 
-        # HIGH END CALCULATION
-        high_end = base_avg + (std_dev * 1.5 * 0.15)  # Volatility boost
-        high_end += trend_diff * 0.08  # Trend bonus
-
-        # Schedule boost (only if easy schedule)
-        if schedule_diff < 0.4:
-            high_end += base_avg * 0.05
-
-        # Contract motivation boost
-        high_end += base_avg * features['contract_motivation_score'] * 0.03
-
-        # Breakout boost
-        high_end += base_avg * features['breakout_probability'] * 0.08
-
-        # Injury risk (minor ceiling impact)
-        high_end -= base_avg * injury_risk * 0.05
-
-        # LOW END CALCULATION
-        low_end = base_avg - (std_dev * 1.5 * 0.15)  # Volatility penalty
-        low_end += trend_diff * 0.08  # Trend penalty (can be negative)
-
-        # Schedule penalty (only if hard schedule)
-        if schedule_diff > 0.6:
-            low_end -= base_avg * 0.05
-
-        # Injury risk (major floor impact)
-        low_end -= base_avg * injury_risk * 0.12
-
-        # Usage explosion probability (raises floor)
-        low_end += base_avg * features['usage_explosion_prob'] * 0.05
-
-        # EXPECTED AVERAGE (weighted between current and trends)
-        expected_avg = base_avg * 0.7 + recent_avg * 0.3
-        expected_avg += base_avg * features['matchup_advantage_score'] * 0.03
-
-        return max(high_end, 0), max(low_end, 0), max(expected_avg, 0)
+        return max(high, 0), max(low, 0), max(expected, 0)
 
 
 # ============================================================================
@@ -331,168 +156,104 @@ class FantasyFeatureEngine:
 
 class FantasyBasketballCNN:
     """
-    Hybrid CNN-LSTM model with multi-head attention for fantasy predictions
+    Hybrid CNN-LSTM model with multi-head attention for fantasy predictions.
+
+    Output heads
+    -------------
+    expected_fp : predicted fantasy points for the next game
+    high_end    : 90th-percentile outcome over next 5 games
+    low_end     : 10th-percentile outcome over next 5 games
     """
 
-    def __init__(self, n_features: int = 50, sequence_length: int = 15):
+    def __init__(self, n_features: int = 32, sequence_length: int = 10):
         self.n_features = n_features
         self.sequence_length = sequence_length
         self.model = None
         self.feature_engine = FantasyFeatureEngine()
 
     def build_model(self):
-        """
-        Build the complete model architecture
-        """
-        # Input: (batch_size, sequence_length, n_features)
-        input_layer = layers.Input(shape=(self.sequence_length, self.n_features))
+        """Build the complete model architecture."""
+        inp = layers.Input(shape=(self.sequence_length, self.n_features))
 
-        # ===== BRANCH 1: Conv1D for pattern recognition =====
-        conv1 = layers.Conv1D(64, kernel_size=3, activation='relu', padding='same')(input_layer)
-        conv1 = layers.BatchNormalization()(conv1)
-        conv1 = layers.Dropout(0.2)(conv1)
+        # ===== Branch 1: Conv1D for local pattern recognition =====
+        c = layers.Conv1D(64, kernel_size=3, activation='relu', padding='same')(inp)
+        c = layers.BatchNormalization()(c)
+        c = layers.Dropout(0.2)(c)
 
-        conv2 = layers.Conv1D(128, kernel_size=3, activation='relu', padding='same')(conv1)
-        conv2 = layers.BatchNormalization()(conv2)
-        conv2 = layers.Dropout(0.3)(conv2)
+        c = layers.Conv1D(128, kernel_size=3, activation='relu', padding='same')(c)
+        c = layers.BatchNormalization()(c)
+        c = layers.Dropout(0.3)(c)
 
-        conv3 = layers.Conv1D(64, kernel_size=2, activation='relu', padding='same')(conv2)
-        conv3 = layers.BatchNormalization()(conv3)
+        c = layers.Conv1D(64, kernel_size=2, activation='relu', padding='same')(c)
+        c = layers.BatchNormalization()(c)
 
-        # ===== BRANCH 2: LSTM for temporal dependencies =====
-        lstm1 = layers.LSTM(128, return_sequences=True)(input_layer)
-        lstm1 = layers.Dropout(0.3)(lstm1)
+        # Multi-head attention on conv output — lets the model learn which
+        # games in the window are most important for predicting the next one.
+        att = layers.MultiHeadAttention(num_heads=4, key_dim=16)(c, c)
+        att = layers.GlobalAveragePooling1D()(att)
 
-        lstm2 = layers.LSTM(64, return_sequences=False)(lstm1)
-        lstm2 = layers.Dropout(0.3)(lstm2)
+        conv_flat = layers.Flatten()(c)
 
-        # ===== Attention Mechanism =====
-        # Multi-head attention on Conv output
-        attention = layers.MultiHeadAttention(num_heads=4, key_dim=64)(conv3, conv3)
-        attention = layers.GlobalAveragePooling1D()(attention)
+        # ===== Branch 2: LSTM for temporal dependencies =====
+        l = layers.LSTM(64, return_sequences=True)(inp)
+        l = layers.Dropout(0.3)(l)
+        l = layers.LSTM(32, return_sequences=False)(l)
+        l = layers.Dropout(0.3)(l)
 
-        # ===== Merge branches =====
-        conv_flat = layers.Flatten()(conv3)
-        merged = layers.Concatenate()([conv_flat, lstm2, attention])
+        # ===== Merge =====
+        merged = layers.Concatenate()([conv_flat, l, att])
 
-        # ===== Dense layers =====
-        dense1 = layers.Dense(256, activation='relu')(merged)
-        dense1 = layers.Dropout(0.4)(dense1)
-
-        dense2 = layers.Dense(128, activation='relu')(dense1)
-        dense2 = layers.Dropout(0.3)(dense2)
-
-        dense3 = layers.Dense(64, activation='relu')(dense2)
+        x = layers.Dense(128, activation='relu')(merged)
+        x = layers.Dropout(0.4)(x)
+        x = layers.Dense(64, activation='relu')(x)
+        x = layers.Dropout(0.3)(x)
+        x = layers.Dense(32, activation='relu')(x)
 
         # ===== Output heads =====
-        # Multiple outputs for different predictions
-        high_end_output = layers.Dense(1, activation='relu', name='high_end')(dense3)
-        low_end_output = layers.Dense(1, activation='relu', name='low_end')(dense3)
-        expected_avg_output = layers.Dense(1, activation='relu', name='expected_avg')(dense3)
-        confidence_output = layers.Dense(1, activation='sigmoid', name='confidence')(dense3)
+        out_expected = layers.Dense(1, name='expected_fp')(x)
+        out_high = layers.Dense(1, name='high_end')(x)
+        out_low = layers.Dense(1, name='low_end')(x)
 
-        # Create model
         self.model = models.Model(
-            inputs=input_layer,
-            outputs=[high_end_output, low_end_output, expected_avg_output, confidence_output]
+            inputs=inp,
+            outputs=[out_expected, out_high, out_low],
         )
 
-        # Compile with custom loss weights
         self.model.compile(
             optimizer=keras.optimizers.Adam(learning_rate=0.001),
             loss={
+                'expected_fp': 'mse',
                 'high_end': 'mse',
                 'low_end': 'mse',
-                'expected_avg': 'mse',
-                'confidence': 'binary_crossentropy'
             },
             loss_weights={
+                'expected_fp': 2.0,
                 'high_end': 1.0,
                 'low_end': 1.0,
-                'expected_avg': 1.5,  # Weight expected avg more
-                'confidence': 0.5
             },
-            metrics=['mae']
+            metrics={'expected_fp': 'mae', 'high_end': 'mae', 'low_end': 'mae'},
         )
-
         return self.model
 
-    def prepare_training_data(self, df: pd.DataFrame) -> Tuple[np.ndarray, Dict]:
-        """
-        Prepare data for training
-        df: DataFrame with columns for each game and player stats
-        """
-        # This will be customized based on actual data format
-        # For now, placeholder structure
-        X = []
-        y_high = []
-        y_low = []
-        y_expected = []
-        y_confidence = []
-
-        # Group by player and create sequences
-        for player_id in df['player_id'].unique():
-            player_df = df[df['player_id'] == player_id].sort_values('game_date')
-
-            # Create rolling windows
-            for i in range(len(player_df) - self.sequence_length):
-                sequence = player_df.iloc[i:i + self.sequence_length]
-
-                # Extract features for sequence
-                feature_vectors = []
-                for _, game in sequence.iterrows():
-                    game_dict = game.to_dict()
-                    features = self.feature_engine.engineer_all_features(game_dict)
-                    feature_vectors.append(list(features.values()))
-
-                X.append(feature_vectors)
-
-                # Target: next game performance
-                next_game = player_df.iloc[i + self.sequence_length]
-                next_game_dict = next_game.to_dict()
-                features = self.feature_engine.engineer_all_features(next_game_dict)
-                high, low, expected = self.feature_engine.calculate_high_low_projections(features)
-
-                y_high.append(high)
-                y_low.append(low)
-                y_expected.append(expected)
-                y_confidence.append(1.0)  # Placeholder
-
-        X = np.array(X)
-        y = {
-            'high_end': np.array(y_high),
-            'low_end': np.array(y_low),
-            'expected_avg': np.array(y_expected),
-            'confidence': np.array(y_confidence)
-        }
-
-        return X, y
-
     def train(self, X_train, y_train, X_val, y_val, epochs=50, batch_size=32):
-        """
-        Train the model
-        """
+        """Train the model with early stopping and LR reduction."""
         callbacks = [
-            keras.callbacks.EarlyStopping(patience=10, restore_best_weights=True),
-            keras.callbacks.ReduceLROnPlateau(factor=0.5, patience=5)
+            keras.callbacks.EarlyStopping(patience=8, restore_best_weights=True),
+            keras.callbacks.ReduceLROnPlateau(factor=0.5, patience=4),
         ]
-
         history = self.model.fit(
             X_train, y_train,
             validation_data=(X_val, y_val),
             epochs=epochs,
             batch_size=batch_size,
             callbacks=callbacks,
-            verbose=1
+            verbose=2,
         )
-
         return history
 
     def predict(self, X):
-        """
-        Make predictions
-        """
-        return self.model.predict(X)
+        """Make predictions. Returns (expected, high, low) arrays."""
+        return self.model.predict(X, verbose=0)
 
 
 # ============================================================================
@@ -501,191 +262,199 @@ class FantasyBasketballCNN:
 
 class TradeAnalyzer:
     """
-    Analyze trades and provide recommendations
+    Analyze fantasy trades using model predictions or heuristic fallback.
     """
 
-    def __init__(self, model: FantasyBasketballCNN):
+    def __init__(self, model: Optional[FantasyBasketballCNN] = None,
+                 player_df: Optional[pd.DataFrame] = None):
         self.model = model
         self.feature_engine = FantasyFeatureEngine()
+        self.player_df = player_df  # full game log dataframe
+
+    def _get_player_prediction(self, player_name: str) -> Dict:
+        """Get model prediction for a player using their last N games."""
+        if self.player_df is None or self.model is None:
+            return {}
+
+        pdf = self.player_df[self.player_df['player_name'] == player_name]
+        if len(pdf) == 0:
+            return {}
+
+        pdf = pdf.sort_values('game_date')
+        seq_len = self.model.sequence_length
+
+        if len(pdf) < seq_len:
+            return {}
+
+        last_n = pdf.tail(seq_len)
+        vecs = []
+        for _, row in last_n.iterrows():
+            feats = self.feature_engine.engineer_all_features(row.to_dict())
+            vecs.append(list(feats.values()))
+
+        X = np.array([vecs])
+        preds = self.model.predict(X)
+        return {
+            'expected_fp': float(preds[0][0][0]),
+            'high_end': float(preds[1][0][0]),
+            'low_end': float(preds[2][0][0]),
+        }
 
     def analyze_trade(self,
-                      players_giving: List[Dict],
-                      players_receiving: List[Dict],
-                      league_context: Dict) -> Dict:
-        """
-        Analyze a multi-player trade
+                      giving_names: List[str],
+                      receiving_names: List[str]) -> Dict:
+        """Analyze a trade between two sides of player names."""
+        def side_value(names):
+            total_exp, total_high, total_low = 0, 0, 0
+            details = []
+            for name in names:
+                pred = self._get_player_prediction(name)
+                if pred:
+                    total_exp += pred['expected_fp']
+                    total_high += pred['high_end']
+                    total_low += pred['low_end']
+                    details.append({'name': name, **pred})
+                else:
+                    # Fallback: use season average from dataframe
+                    pdf = self.player_df[self.player_df['player_name'] == name]
+                    if len(pdf) > 0:
+                        avg = pdf['season_avg_fp'].iloc[-1]
+                    else:
+                        avg = 0
+                    total_exp += avg
+                    total_high += avg
+                    total_low += avg
+                    details.append({'name': name, 'expected_fp': avg,
+                                    'high_end': avg, 'low_end': avg})
+            return total_exp, total_high, total_low, details
 
-        Args:
-            players_giving: List of player data dicts you're trading away
-            players_receiving: List of player data dicts you're getting
-            league_context: League settings, roster needs, etc.
+        give_exp, give_high, give_low, give_details = side_value(giving_names)
+        recv_exp, recv_high, recv_low, recv_details = side_value(receiving_names)
 
-        Returns:
-            Comprehensive trade analysis
-        """
-        analysis = {
-            'trade_value_difference': 0,
-            'risk_assessment': {},
-            'roster_fit': {},
-            'recommendation': '',
-            'confidence': 0
-        }
+        diff = recv_exp - give_exp
 
-        # Calculate total value for each side
-        giving_value = self._calculate_total_value(players_giving)
-        receiving_value = self._calculate_total_value(players_receiving)
-
-        analysis['giving_total_value'] = giving_value
-        analysis['receiving_total_value'] = receiving_value
-        analysis['trade_value_difference'] = receiving_value - giving_value
-
-        # Risk assessment
-        analysis['risk_assessment'] = {
-            'giving_injury_risk': np.mean([p.get('injury_risk_score', 0) for p in players_giving]),
-            'receiving_injury_risk': np.mean([p.get('injury_risk_score', 0) for p in players_receiving]),
-            'giving_volatility': np.mean([p.get('fp_std_dev_15', 0) for p in players_giving]),
-            'receiving_volatility': np.mean([p.get('fp_std_dev_15', 0) for p in players_receiving])
-        }
-
-        # Generate recommendation
-        if analysis['trade_value_difference'] > 5:
-            analysis['recommendation'] = 'ACCEPT - Good value trade'
-            analysis['confidence'] = min(analysis['trade_value_difference'] / 10, 1.0)
-        elif analysis['trade_value_difference'] < -5:
-            analysis['recommendation'] = 'REJECT - Losing value'
-            analysis['confidence'] = min(abs(analysis['trade_value_difference']) / 10, 1.0)
+        if diff > 3:
+            rec = 'ACCEPT'
+        elif diff < -3:
+            rec = 'REJECT'
         else:
-            analysis['recommendation'] = 'NEUTRAL - Even trade, consider roster fit'
-            analysis['confidence'] = 0.5
+            rec = 'NEUTRAL'
 
-        return analysis
-
-    def _calculate_total_value(self, players: List[Dict]) -> float:
-        """
-        Calculate total fantasy value for a group of players
-        """
-        total_value = 0
-
-        for player in players:
-            features = self.feature_engine.engineer_all_features(player)
-            high, low, expected = self.feature_engine.calculate_high_low_projections(features)
-
-            # Value = Expected avg weighted by confidence
-            confidence = 1 - features['injury_risk_score']
-            value = expected * confidence * player.get('games_remaining', 82) / 82
-
-            total_value += value
-
-        return total_value
-
-    def find_trade_targets(self,
-                           my_roster: List[Dict],
-                           all_players: List[Dict],
-                           need_position: str = None) -> List[Dict]:
-        """
-        Find players to target in trades based on your needs
-        """
-        targets = []
-
-        for player in all_players:
-            # Skip players on my roster
-            if player['player_id'] in [p['player_id'] for p in my_roster]:
-                continue
-
-            # Filter by position if specified
-            if need_position and need_position not in player.get('position', ''):
-                continue
-
-            features = self.feature_engine.engineer_all_features(player)
-            high, low, expected = self.feature_engine.calculate_high_low_projections(features)
-
-            targets.append({
-                'player_name': player['player_name'],
-                'expected_fp': expected,
-                'upside': high - expected,
-                'injury_risk': features['injury_risk_score'],
-                'breakout_probability': features['breakout_probability']
-            })
-
-        # Sort by expected FP
-        targets.sort(key=lambda x: x['expected_fp'], reverse=True)
-
-        return targets[:20]  # Top 20 targets
+        return {
+            'giving': give_details,
+            'receiving': recv_details,
+            'giving_total': give_exp,
+            'receiving_total': recv_exp,
+            'value_difference': diff,
+            'ceiling_comparison': recv_high - give_high,
+            'floor_comparison': recv_low - give_low,
+            'recommendation': rec,
+        }
 
 
 # ============================================================================
-# PART 4: USAGE EXAMPLE
+# PART 4: DATA PREPARATION UTILITIES
 # ============================================================================
 
-def example_usage():
+def prepare_training_data(df: pd.DataFrame,
+                          sequence_length: int = 10,
+                          lookahead: int = 5) -> Tuple[np.ndarray, Dict, List[int]]:
     """
-    Example of how to use the system
-    """
-    # Initialize
-    feature_engine = FantasyFeatureEngine()
+    Build (X, y) arrays from a game-log DataFrame.
 
-    # Example player data
-    player_data = {
-        'player_name': 'LaMelo Ball',
-        'age': 24,
-        'games_played': 30,
-        'games_remaining': 52,
-        'season_avg_fp': 44.7,
-        'last_5_avg_fp': 48.2,
-        'last_10_avg_fp': 46.5,
-        'last_15_avg_fp': 45.1,
-        'fp_std_15': 9.8,
-        'fp_std_30': 10.2,
-        'mpg': 34.5,
-        'usage_rate': 0.29,
-        'ts_pct': 0.545,
-        'per': 20.5,
-        'games_missed_last_season': 35,
-        'games_missed_current': 2,
-        'injury_status': 'healthy',
-        'contract_year': False,
-        'years_until_free_agency': 2,
-        'position': 'PG',
-        'is_starter': True,
-        'team_pace': 102.5,
-        'team_win_pct': 0.450,
-        'star_teammate_recently_left': False,
-        'next_5_opponent_def_ratings': [110, 108, 112, 107, 109],
-        'next_5_opponent_pace': [100, 102, 98, 101, 99],
-        'historical_fp_vs_next_5_opponents': [42, 48, 39, 45, 46]
+    Targets (derived from real game outcomes, NOT a formula):
+      expected_fp : actual fantasy points of the very next game
+      high_end    : 90th percentile of the next `lookahead` games
+      low_end     : 10th percentile of the next `lookahead` games
+
+    Returns:
+        X            : (n_samples, sequence_length, n_features)
+        y            : dict of target arrays
+        player_ids   : list of player_id per sample (for splitting)
+    """
+    engine = FantasyFeatureEngine()
+
+    X_data = []
+    y_expected = []
+    y_high = []
+    y_low = []
+    player_ids = []
+
+    for pid in df['player_id'].unique():
+        pdf = df[df['player_id'] == pid].sort_values('game_date').reset_index(drop=True)
+
+        # Need sequence_length games for input + lookahead games for targets
+        if len(pdf) < sequence_length + lookahead:
+            continue
+
+        for i in range(len(pdf) - sequence_length - lookahead + 1):
+            seq = pdf.iloc[i:i + sequence_length]
+            future = pdf.iloc[i + sequence_length:i + sequence_length + lookahead]
+
+            # Features for each game in the window
+            vecs = []
+            for _, game in seq.iterrows():
+                feats = engine.engineer_all_features(game.to_dict())
+                vecs.append(list(feats.values()))
+
+            X_data.append(vecs)
+
+            # Targets from real outcomes
+            next_fp = pdf.iloc[i + sequence_length]['fantasy_points']
+            future_fps = future['fantasy_points'].values
+
+            y_expected.append(float(next_fp))
+            y_high.append(float(np.percentile(future_fps, 90)))
+            y_low.append(float(np.percentile(future_fps, 10)))
+            player_ids.append(pid)
+
+    X = np.array(X_data, dtype=np.float32)
+    y = {
+        'expected_fp': np.array(y_expected, dtype=np.float32),
+        'high_end': np.array(y_high, dtype=np.float32),
+        'low_end': np.array(y_low, dtype=np.float32),
     }
+    return X, y, player_ids
 
-    # Engineer features
-    features = feature_engine.engineer_all_features(player_data)
 
-    # Calculate projections
-    high, low, expected = feature_engine.calculate_high_low_projections(features)
+def split_by_player(X, y, player_ids, val_fraction=0.2):
+    """
+    Split data by player to prevent leakage.
+    All games from a given player go into either train or val, never both.
+    """
+    unique_pids = list(set(player_ids))
+    np.random.seed(42)
+    np.random.shuffle(unique_pids)
+    split = int(len(unique_pids) * (1 - val_fraction))
+    train_pids = set(unique_pids[:split])
 
-    print(f"\n{'=' * 60}")
-    print(f"FANTASY PROJECTION: {player_data['player_name']}")
-    print(f"{'=' * 60}")
-    print(f"Current Season Avg: {player_data['season_avg_fp']:.1f} FP")
-    print(f"Expected Average:   {expected:.1f} FP")
-    print(f"High End (Ceiling): {high:.1f} FP")
-    print(f"Low End (Floor):    {low:.1f} FP")
-    print(f"\nKey Factors:")
-    print(f"  - Injury Risk Score: {features['injury_risk_score']:.2f}")
-    print(f"  - Schedule Difficulty: {features['schedule_difficulty']:.2f}")
-    print(f"  - Breakout Probability: {features['breakout_probability']:.2f}")
-    print(f"  - Contract Motivation: {features['contract_motivation_score']:.2f}")
-    print(f"{'=' * 60}\n")
+    train_mask = np.array([pid in train_pids for pid in player_ids])
+    val_mask = ~train_mask
 
+    X_train = X[train_mask]
+    X_val = X[val_mask]
+    y_train = {k: v[train_mask] for k, v in y.items()}
+    y_val = {k: v[val_mask] for k, v in y.items()}
+
+    return X_train, y_train, X_val, y_val
+
+
+# ============================================================================
+# PART 5: QUICK DEMO
+# ============================================================================
 
 if __name__ == "__main__":
-    example_usage()
-
-    print("\n" + "=" * 60)
-    print("SYSTEM READY FOR TRAINING")
-    print("=" * 60)
-    print("\nNext steps:")
-    print("1. Load your CSV/JSON data")
-    print("2. Initialize model: model = FantasyBasketballCNN()")
-    print("3. Build architecture: model.build_model()")
-    print("4. Train: model.train(X_train, y_train, X_val, y_val)")
-    print("5. Use TradeAnalyzer for trade recommendations")
-    print("=" * 60)
+    engine = FantasyFeatureEngine()
+    sample = {
+        'player_name': 'LaMelo Ball', 'age': 24, 'games_played': 30,
+        'season_avg_fp': 44.7, 'last_5_avg_fp': 48.2, 'last_10_avg_fp': 46.5,
+        'last_15_avg_fp': 45.1, 'fp_std_15': 9.8, 'fp_std_30': 10.2,
+        'mpg': 34.5, 'usage_rate': 0.29, 'true_shooting_pct': 0.545,
+        'pts': 28, 'reb': 6, 'ast': 8, 'stl': 1, 'blk': 0, 'tov': 3,
+        'fgm': 10, 'fga': 22, 'fg3m': 3, 'fg3a': 8, 'ftm': 5, 'fta': 6,
+        'minutes': 34, 'is_starter': 1, 'position': 'Guard',
+    }
+    feats = engine.engineer_all_features(sample)
+    high, low, exp = engine.calculate_high_low_projections(feats)
+    print(f"Features: {len(feats)}")
+    print(f"Expected: {exp:.1f}  Ceiling: {high:.1f}  Floor: {low:.1f}")
