@@ -2,6 +2,8 @@
 
 A fantasy basketball trade analyzer powered by a hybrid CNN-LSTM model with multi-head attention, trained on real 2024-25 NBA game data. Compares players across predicted fantasy points, ceiling, and floor to help you evaluate trades.
 
+![Trade Analyzer Demo](assets/demo.png)
+
 ## How It Works
 
 1. **Real NBA Data** — Fetches 2024-25 season game logs for 150+ NBA players via the `nba_api` package
