@@ -119,7 +119,7 @@ const TradeAnalyzer = () => {
   return (
     <div className="trade-analyzer">
       <div className="analyzer-header">
-        <h1>Fantasy Basketball Trade Analyzer</h1>
+        <h1>Fantasy Basketball <span>Trade Analyzer</span></h1>
         <p>Powered by CNN predictions trained on real 2024-25 NBA data</p>
       </div>
 
