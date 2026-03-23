@@ -97,6 +97,17 @@ trade-analyzer/
 └── README.md
 ```
 
+## Why CNN-LSTM?
+
+Fantasy basketball performance isn't random — it has both short-term patterns (hot/cold streaks, back-to-backs) and longer-term trends (role changes, minutes fluctuations). A CNN captures local patterns within recent games while an LSTM tracks how a player's production evolves over a sequence. Multi-head attention lets the model weigh which past games matter most for the current prediction, rather than treating all 10 games in the window equally. This hybrid approach outperforms a simple season-average baseline, particularly for ceiling and floor predictions where recent form matters more than historical averages.
+
+## Future Improvements
+
+- **Multi-season training data** — Expand beyond 2024-25 to improve model generalization and handle players with limited current-season data
+- **Injury and rest-day awareness** — Incorporate injury reports and back-to-back schedule detection to adjust predictions for load management
+- **Matchup-based adjustments** — Factor in opponent defensive ratings and pace to predict performance against specific teams
+- **Live data updates** — Auto-fetch new game logs so predictions stay current throughout the season
+
 ## Contributors
 
 **Pratham Subrahmanya** — CNN model architecture, real NBA data pipeline, feature engineering, model training, predictions API, trade analyzer UI, and frontend design
