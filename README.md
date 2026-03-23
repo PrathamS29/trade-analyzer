@@ -18,6 +18,11 @@ A modern fullstack application built with React, FastAPI, and MongoDB, featuring
 - **JWT** - JSON Web Tokens for authentication
 - **Passlib** - Password hashing with bcrypt
 
+## Contributors
+Built by **Pratham Subrahmanya and Shaun Gao** - Full-stack development, authentication system, MongoDB integration, and API design
+- GitHub: [@PrathamS29](https://github.com/PrathamS29) (personal) | [@PrathamS-23](https://github.com/PrathamS-23) (school)
+- Collaborated with [@shaungao123](https://github.com/shaungao123)
+
 ## Project Structure
 
 ```
