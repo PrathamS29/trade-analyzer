@@ -99,7 +99,7 @@ trade-analyzer/
 
 ## Why CNN-LSTM?
 
-Fantasy basketball performance isn't random — it has both short-term patterns (hot/cold streaks, back-to-backs) and longer-term trends (role changes, minutes fluctuations). A CNN captures local patterns within recent games while an LSTM tracks how a player's production evolves over a sequence. Multi-head attention lets the model weigh which past games matter most for the current prediction, rather than treating all 10 games in the window equally. This hybrid approach outperforms a simple season-average baseline, particularly for ceiling and floor predictions where recent form matters more than historical averages.
+Fantasy basketball performance isn't random, it has both short-term patterns (hot/cold streaks, back-to-backs) and longer-term trends (role changes, minutes fluctuations). A CNN captures local patterns within recent games while an LSTM tracks how a player's production evolves over a sequence. Multi-head attention lets the model weigh which past games matter most for the current prediction, rather than treating all 10 games in the window equally. This hybrid approach outperforms a simple season-average baseline, particularly for ceiling and floor predictions where recent form matters more than historical averages.
 
 ## Future Improvements
 
